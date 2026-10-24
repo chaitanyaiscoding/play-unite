@@ -1,0 +1,14 @@
+{$SITE_ADDRESS} {
+	# Compress everything except the live score stream (Server-Sent Events).
+	@compressible not path /api/matches/*/live
+	encode @compressible zstd gzip
+
+	reverse_proxy app:5000
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+}
