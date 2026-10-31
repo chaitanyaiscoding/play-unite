@@ -6,7 +6,7 @@ export const TEAM_NAME_MAX = 30;
 export const TEAM_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 ._'-]*$/;
 // Players the captain adds (the captain is a member on top of these).
 export const MIN_PLAYERS = 1;
-export const MAX_PLAYERS = 15;
+export const MAX_PLAYERS = 20;
 // Players needed to take the field (captain included).
 export const SQUAD_SIZE = 11;
 export const STATUSES = ['in_match', 'needs_players', 'idle'];

@@ -35,7 +35,7 @@ const Icon = ({ children }) => (
 const FEATURES = [
   {
     title: 'Create a team',
-    text: 'Claim a unique team name, pick up to 15 players and lead as captain.',
+    text: 'Claim a unique team name, pick up to 20 players and lead as captain.',
     icon: (
       <>
         <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />

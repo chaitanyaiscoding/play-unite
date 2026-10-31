@@ -30,7 +30,7 @@ embedded MongoDB starts automatically with data persisted in `server/.data/`.
     and an `httpOnly`, `SameSite=Lax` cookie valid for a year, renewed on use.
 - **Teams** — from Home a player can:
   - **Create a Team**: enter a unique team name (case-insensitive, `_id` = lower-cased
-    name), then on `/teams/new` pick 1–15 players from a searchable list of all users.
+    name), then on `/teams/new` pick 1–20 players from a searchable list of all users.
     The creator is the team's **captain** and is a member on top of those 15.
     Only the captain can add players later (on the team page).
   - **Join a Team**: search a dropdown of all teams, or use the **All Teams** list
@@ -134,7 +134,7 @@ cookie (401 without one).
 | GET    | `/api/teams/availability?name=` | `{ available, error }` for a team name              |
 | POST   | `/api/teams`                    | `{ name, players: [names] }` → 201, 400, 409 taken  |
 | GET    | `/api/teams/:name`              | Team details + status (+ pending requests for the captain) |
-| POST   | `/api/teams/:name/players`      | Captain adds `{ players }` (max 15), 403 otherwise  |
+| POST   | `/api/teams/:name/players`      | Captain adds `{ players }` (max 20), 403 otherwise  |
 | PUT    | `/api/teams/:name/lineup`       | Captain saves the default `{ playingXI: [names] }` (≤ 11) |
 
 | Method | Path                        | Description                                                        |

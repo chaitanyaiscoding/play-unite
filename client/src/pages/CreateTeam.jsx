@@ -6,7 +6,7 @@ import PlayerPicker from '../components/PlayerPicker.jsx';
 import { teamPath } from './Home.jsx';
 
 const MIN_PLAYERS = 1;
-const MAX_PLAYERS = 15;
+const MAX_PLAYERS = 20;
 
 export default function CreateTeam() {
   const { player } = usePlayer();
