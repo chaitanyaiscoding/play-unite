@@ -343,6 +343,34 @@ export function splitLog(log = []) {
   return out;
 }
 
+// The log with one ball re-recorded (the original isn't changed); replay it to
+// validate. A removed wicket takes the batter who came in for it out of the log.
+export function correctBall(log, index, ball) {
+  const old = log[index];
+  if (old?.type !== 'ball' || ball?.type !== 'ball') fail('Only a ball can be corrected.');
+  const fixed = [...log];
+  fixed[index] = { inn: old.inn, ...ball };
+  if (old.wicket && !ball.wicket) {
+    const newBatter = fixed.findIndex((e, i) => i > index && e.inn === old.inn && e.type === 'batter');
+    if (newBatter !== -1) fixed.splice(newBatter, 1);
+  }
+  return fixed;
+}
+
+// The balls of the over just finished: commentary entries, plus `index`, the
+// ball's position in the flat log. `inn` is innings number `idx` of the replay.
+export function lastOverBalls(log, inn, idx) {
+  const isLegal = (e) => e.extra !== 'wide' && e.extra !== 'noball';
+  const balls = log.map((e, index) => ({ e, index })).filter(({ e }) => e.inn === idx && e.type === 'ball');
+  let from = balls.length;
+  for (let legal = 0; from > 0 && legal < 6; ) {
+    from -= 1;
+    if (isLegal(balls[from].e)) legal += 1;
+  }
+  while (from > 0 && !isLegal(balls[from - 1].e)) from -= 1; // extras before the over's first legal ball
+  return balls.slice(from).map(({ index }, i) => ({ ...inn.commentary[from + i], index }));
+}
+
 // Current run rate, and for a chase: runs needed, balls left, required rate.
 export function rates(state, idx = state.current ?? state.innings.length - 1) {
   const inn = state.innings[idx];

@@ -8,7 +8,7 @@ import { requirePlayer } from '../middleware/currentPlayer.js';
 import { finalizeMatch, replayMatch } from '../lib/scorecard.js';
 import { watch, publish } from '../lib/live.js';
 import { COIN_SIDES, TOSS_DECISIONS, XI_MIN, XI_MAX, dismissalText, levelFor } from '../../../shared/cricket.js';
-import { ScoringError, OVERS_MIN, OVERS_MAX, rates } from '../../../shared/scoring.js';
+import { ScoringError, OVERS_MIN, OVERS_MAX, correctBall, rates } from '../../../shared/scoring.js';
 
 const router = Router();
 router.use(requirePlayer);
@@ -16,6 +16,15 @@ router.use(requirePlayer);
 const ACTIVE = ['toss', 'live'];
 const FREE = { inMatch: false, matchStartedAt: null, currentMatch: null };
 const membersOf = (team) => [team.captain, ...team.players];
+const REOPEN_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+// A finished match can go back to live for a day, to fix its last ball.
+const canReopen = (match) =>
+  match.status === 'completed' &&
+  match.outcome?.type !== 'no_result' &&
+  (match.log?.length ?? 0) > 0 &&
+  Boolean(match.endedAt) &&
+  Date.now() - match.endedAt.getTime() < REOPEN_WINDOW_MS;
 
 async function loadMatch(req, res) {
   if (!mongoose.isValidObjectId(req.params.id)) {
@@ -98,6 +107,7 @@ async function view(match, me) {
     status: match.status,
     createdBy: name(match.createdBy),
     canControl: match.createdBy === me,
+    canReopen: match.createdBy === me && canReopen(match),
     isParticipant,
     sides: match.sides.map((s) => ({
       team: s.name,
@@ -430,6 +440,47 @@ async function loadForScoring(req, res) {
   return match;
 }
 
+// Records the result: scorecard, MVP, stars; both teams are free again.
+// False if the log changed or the match was completed in the meantime.
+async function recordResult(match, state, noResult, logSize) {
+  const done = await finalizeMatch(match, state, noResult);
+  const saved = await Match.updateOne(
+    { _id: match._id, status: 'live', log: { $size: logSize } },
+    {
+      status: 'completed',
+      endedAt: new Date(),
+      innings: done.innings,
+      performances: done.performances,
+      outcome: done.outcome,
+      mvp: done.mvp?.player ?? null,
+      mvpPoints: done.mvp?.points ?? null,
+    }
+  );
+  if (!saved.modifiedCount) return false;
+
+  const everyone = match.sides.flatMap((s) => s.playingXI);
+  await Player.bulkWrite([
+    { updateMany: { filter: { _id: { $in: everyone } }, update: { $inc: { matchesPlayed: 1 } } } },
+    ...(done.mvp ? [{ updateOne: { filter: { _id: done.mvp.player }, update: { $inc: { mvpCount: 1 } } } }] : []),
+  ]);
+  await Team.updateMany({ currentMatch: match._id }, FREE);
+  publish(match._id, { status: 'completed' });
+  return true;
+}
+
+// After the log changed: closes the match if that ended it, and tells followers.
+// If closing fails the ball stays saved, and the scorer can still tap Finish match.
+async function afterScoring(match, state, logSize) {
+  if (state.finished) {
+    try {
+      if (await recordResult(match, state, false, logSize)) return;
+    } catch (err) {
+      console.error(err);
+    }
+  }
+  publish(match._id, { at: logSize });
+}
+
 // POST /api/matches/:id/events { event, at } — the scorer records one ball or action.
 router.post('/:id/events', async (req, res, next) => {
   try {
@@ -455,7 +506,47 @@ router.post('/:id/events', async (req, res, next) => {
     if (!saved.modifiedCount) {
       return res.status(409).json({ error: 'The scorecard changed on another device. Reloading…', stale: true });
     }
-    publish(match._id, { at: log.length + 1 });
+    await afterScoring(match, state, log.length + 1);
+    res.json(await view(await Match.findById(match._id), req.player._id));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/matches/:id/correct { index, event, at } — re-records one ball of the
+// current innings. Everything scored after it must still make sense.
+router.post('/:id/correct', async (req, res, next) => {
+  try {
+    const match = await loadForScoring(req, res);
+    if (!match) return;
+    const log = match.log ?? [];
+    const index = Number(req.body?.index);
+    const old = log[index];
+    if (old?.type !== 'ball' || old.inn !== replayMatch(match).current) {
+      return res.status(400).json({ error: 'Only a ball from the current innings can be changed.' });
+    }
+    const event = readEvent(req.body?.event);
+    if (event.type !== 'ball') return res.status(400).json({ error: 'A ball can only be changed to another ball.' });
+
+    let fixed;
+    let state;
+    try {
+      fixed = correctBall(log, index, event);
+      state = replayMatch(match, fixed);
+    } catch (err) {
+      if (!(err instanceof ScoringError)) throw err;
+      const ballAt = log.slice(0, index).filter((e) => e.inn === old.inn).length;
+      const later = err.at && err.at.index !== ballAt;
+      return res.status(400).json({
+        error: later ? `That change clashes with what was scored after this ball (${err.message}) Undo back to this ball instead.` : err.message,
+      });
+    }
+
+    const saved = await Match.updateOne({ _id: match._id, status: 'live', log: { $size: log.length } }, { log: fixed });
+    if (!saved.modifiedCount) {
+      return res.status(409).json({ error: 'The scorecard changed on another device. Reloading…', stale: true });
+    }
+    await afterScoring(match, state, fixed.length);
     res.json(await view(await Match.findById(match._id), req.player._id));
   } catch (err) {
     next(err);
@@ -480,8 +571,8 @@ router.post('/:id/undo', async (req, res, next) => {
   }
 });
 
-// POST /api/matches/:id/complete { at, noResult? } — records the result once the
-// match is over (or as a no-result at any time): scorecard, MVP, stars.
+// POST /api/matches/:id/complete { at, noResult? } — ends the match as a no-result
+// at any time, or records the result if closing it automatically didn't go through.
 router.post('/:id/complete', async (req, res, next) => {
   try {
     const match = await loadForScoring(req, res);
@@ -491,29 +582,67 @@ router.post('/:id/complete', async (req, res, next) => {
     if (!state.finished && !noResult) {
       return res.status(409).json({ error: 'The match isn’t over yet. Keep scoring, or end it as a no result.' });
     }
+    if (!(await recordResult(match, state, noResult, (match.log ?? []).length))) {
+      return res.status(409).json({ error: 'This match was already completed.' });
+    }
+    res.json(await view(await Match.findById(match._id), req.player._id));
+  } catch (err) {
+    next(err);
+  }
+});
 
-    const done = await finalizeMatch(match, state, noResult);
-    const saved = await Match.updateOne(
-      { _id: match._id, status: 'live', log: { $size: (match.log ?? []).length } },
-      {
-        status: 'completed',
-        endedAt: new Date(),
-        innings: done.innings,
-        performances: done.performances,
-        outcome: done.outcome,
-        mvp: done.mvp?.player ?? null,
-        mvpPoints: done.mvp?.points ?? null,
-      }
-    );
-    if (!saved.modifiedCount) return res.status(409).json({ error: 'This match was already completed.' });
+// POST /api/matches/:id/reopen — the final ball was wrong: takes it back and puts
+// the match live again, reversing the result and its stats.
+router.post('/:id/reopen', async (req, res, next) => {
+  try {
+    const match = await loadForCreator(req, res, 'reopen this match');
+    if (!match) return;
+    if (!canReopen(match)) return res.status(409).json({ error: 'This match can no longer be reopened.' });
 
     const everyone = match.sides.flatMap((s) => s.playingXI);
+    const busy = await Match.findOne({ _id: { $ne: match._id }, status: { $in: ACTIVE }, 'sides.playingXI': { $in: everyone } });
+    if (busy) {
+      const k = busy.sides.flatMap((s) => s.playingXI).find((x) => everyone.includes(x));
+      const p = await Player.findById(k, { name: 1 });
+      return res.status(409).json({ error: `${p?.name ?? k} is already playing in ${busy.sides[0].name} vs ${busy.sides[1].name}.` });
+    }
+
+    for (const side of match.sides) {
+      const locked = await Team.updateOne(
+        { _id: side.team, inMatch: false },
+        { inMatch: true, matchStartedAt: match.startedAt, currentMatch: match._id }
+      );
+      if (!locked.modifiedCount) {
+        await Team.updateMany({ currentMatch: match._id }, FREE);
+        return res.status(409).json({ error: `${side.name} is already playing a match.` });
+      }
+    }
+
+    const saved = await Match.updateOne(
+      { _id: match._id, status: 'completed', log: { $size: match.log.length } },
+      {
+        $pop: { log: 1 },
+        $set: {
+          status: 'live',
+          endedAt: null,
+          innings: [],
+          performances: [],
+          outcome: { winner: null, type: null, margin: null, text: null },
+          mvp: null,
+          mvpPoints: null,
+        },
+      }
+    );
+    if (!saved.modifiedCount) {
+      await Team.updateMany({ currentMatch: match._id }, FREE);
+      return res.status(409).json({ error: 'This match was already reopened.' });
+    }
+
     await Player.bulkWrite([
-      { updateMany: { filter: { _id: { $in: everyone } }, update: { $inc: { matchesPlayed: 1 } } } },
-      ...(done.mvp ? [{ updateOne: { filter: { _id: done.mvp.player }, update: { $inc: { mvpCount: 1 } } } }] : []),
+      { updateMany: { filter: { _id: { $in: everyone } }, update: { $inc: { matchesPlayed: -1 } } } },
+      ...(match.mvp ? [{ updateOne: { filter: { _id: match.mvp }, update: { $inc: { mvpCount: -1 } } } }] : []),
     ]);
-    await Team.updateMany({ currentMatch: match._id }, FREE);
-    publish(match._id, { status: 'completed' });
+    publish(match._id, { at: match.log.length - 1 });
     res.json(await view(await Match.findById(match._id), req.player._id));
   } catch (err) {
     next(err);

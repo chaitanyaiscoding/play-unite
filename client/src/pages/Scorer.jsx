@@ -1,15 +1,18 @@
 import { useState } from 'react';
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
-import { abandonMatch, addMatchEvent, finishMatch, undoMatchEvent } from '../api.js';
-import useLiveMatch from '../useLiveMatch.js';
+import { abandonMatch, addMatchEvent, correctMatchBall, finishMatch, undoMatchEvent } from '../api.js';
+import useLiveMatch, { matchConfig } from '../useLiveMatch.js';
 import {
   WICKETS_ON,
   WICKET_TYPES,
   availableBatters,
   availableBowlers,
   describeBall,
+  lastOverBalls,
   oversText,
   rates,
+  replay,
+  splitLog,
   summarize,
 } from '../../../shared/scoring.js';
 import { buildPerformances, emptyPerformance, matchResult, pickMvp, scorePerformance } from '../../../shared/cricket.js';
@@ -19,9 +22,10 @@ const sr = (r, b) => (b ? ((r / b) * 100).toFixed(1) : '0.0');
 const econ = (r, balls) => (balls ? (r / (balls / 6)).toFixed(1) : '0.0');
 const EXTRA_LABEL = { wide: 'Wide', noball: 'No ball', bye: 'Byes', legbye: 'Leg byes' };
 const EXTRA_RUNS = { wide: [0, 1, 2, 3, 4], noball: [0, 1, 2, 3, 4, 6], bye: [1, 2, 3, 4], legbye: [1, 2, 3, 4] };
+const chipClass = (b) => `ball-chip${/W/.test(b) && !/Wd$/.test(b) ? ' is-w' : b === '4' || b === '6' ? ' is-b' : /Wd|Nb|B|Lb/.test(b) ? ' is-x' : ''}`;
 
 // Bottom sheet used for every scorer prompt.
-function Sheet({ title, children, onClose, onUndo }) {
+function Sheet({ title, children, onClose, onUndo, error }) {
   return (
     <div className="sheet" role="dialog" aria-modal="true" aria-label={title}>
       {onClose && <button type="button" className="sheet__scrim" aria-label="Close" onClick={onClose} />}
@@ -35,6 +39,7 @@ function Sheet({ title, children, onClose, onUndo }) {
           )}
         </div>
         {children}
+        {error && <p className="help help--error">{error}</p>}
         {/* Prompts cover the keypad, so a mistake can still be taken back from here. */}
         {onUndo && (
           <button type="button" className="cta__link" onClick={onUndo}>
@@ -99,7 +104,7 @@ function OpenersSheet({ inn, onStart, onUndo, busy }) {
   );
 }
 
-function WicketSheet({ inn, extra, onConfirm, onClose, busy }) {
+function WicketSheet({ inn, extra, onConfirm, onClose, busy, error }) {
   const allowed = WICKETS_ON[extra ?? 'none'];
   const [how, setHow] = useState(allowed[0]);
   const [out, setOut] = useState(inn.striker);
@@ -109,7 +114,7 @@ function WicketSheet({ inn, extra, onConfirm, onClose, busy }) {
   const ok = !((how === 'caught' || how === 'stumped') && !fielder);
 
   return (
-    <Sheet title={extra ? `Wicket off a ${EXTRA_LABEL[extra].toLowerCase().replace(/s$/, '')}` : 'Wicket'} onClose={onClose}>
+    <Sheet title={extra ? `Wicket off a ${EXTRA_LABEL[extra].toLowerCase().replace(/s$/, '')}` : 'Wicket'} onClose={onClose} error={error}>
       <div className="chips">
         {allowed.map((v) => (
           <button
@@ -177,9 +182,33 @@ function WicketSheet({ inn, extra, onConfirm, onClose, busy }) {
   );
 }
 
-function ExtraSheet({ extra, onRuns, onWicket, onClose, busy }) {
+// Re-records a ball of the over just finished, from the bowler prompt.
+function FixBallSheet({ ball, onRuns, onExtra, onWicket, onClose, busy, error }) {
   return (
-    <Sheet title={EXTRA_LABEL[extra]} onClose={onClose}>
+    <Sheet title={`Change ball ${ball.over}`} onClose={onClose} error={error}>
+      <p className="help">Recorded as: {describeBall(ball)}. What actually happened?</p>
+      <div className="fix-grid">
+        {[0, 1, 2, 3, 4, 5, 6].map((n) => (
+          <button key={n} type="button" className={`key${n === 4 || n === 6 ? ' key--boundary' : ''}`} disabled={busy} onClick={() => onRuns(n)}>
+            {n === 0 ? '•' : n}
+          </button>
+        ))}
+        <button type="button" className="key key--out" disabled={busy} onClick={onWicket}>
+          OUT
+        </button>
+        {['wide', 'noball', 'bye', 'legbye'].map((x) => (
+          <button key={x} type="button" className="key key--extra" disabled={busy} onClick={() => onExtra(x)}>
+            {{ wide: 'WD', noball: 'NB', bye: 'BYE', legbye: 'LB' }[x]}
+          </button>
+        ))}
+      </div>
+    </Sheet>
+  );
+}
+
+function ExtraSheet({ extra, onRuns, onWicket, onClose, busy, error }) {
+  return (
+    <Sheet title={EXTRA_LABEL[extra]} onClose={onClose} error={error}>
       <p className="help">
         {extra === 'wide'
           ? 'Runs taken on the wide (1 wide is added automatically).'
@@ -207,7 +236,8 @@ export default function Scorer() {
   const { match, setMatch, state, error: loadError, reload } = useLiveMatch(id);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [sheet, setSheet] = useState(null); // { kind: 'extra' | 'wicket' | 'menu', extra? }
+  // { kind: 'extra' | 'wicket' | 'menu' | 'fix', extra?, fix? }; `fix` is the ball being corrected.
+  const [sheet, setSheet] = useState(null);
 
   if (loadError && !match) return <div className="card section"><p className="help help--error">{loadError}</p></div>;
   if (!match) return null;
@@ -231,8 +261,15 @@ export default function Scorer() {
     }
   };
   const event = (e) => send(() => addMatchEvent(id, e, at));
-  const ball = (runs, extra = null, wicket = null) => event({ type: 'ball', runs, extra, wicket });
+  const ball = (runs, extra = null, wicket = null) => {
+    const e = { type: 'ball', runs, extra, wicket };
+    return sheet?.fix ? send(() => correctMatchBall(id, sheet.fix.index, e, at)) : event(e);
+  };
   const undo = () => send(() => undoMatchEvent(id, at));
+  const closeSheet = () => {
+    setSheet(null);
+    setError('');
+  };
 
   const roles = new Map(match.sides.flatMap((s) => s.playingXI.map((p) => [p.name, p.role])));
   const idx = state.current ?? state.innings.length - 1;
@@ -272,6 +309,10 @@ export default function Scorer() {
 
   const prev = idx === 1 ? state.innings[0] : null;
   const keypadOff = busy || inn.needs.length > 0 || inn.complete || state.finished;
+  const needBowler = !state.finished && inn.needs[0] === 'bowler';
+  const lastOver = needBowler ? lastOverBalls(match.log, inn, idx) : [];
+  // Correcting a wicket offers the batters who were in when that ball was bowled.
+  const wicketInn = sheet?.fix ? replay(matchConfig(match), splitLog(match.log.slice(0, sheet.fix.index))).innings[idx] : inn;
 
   return (
     <section className="scorer">
@@ -363,7 +404,7 @@ export default function Scorer() {
           <div className="this-over" aria-label="This over">
             {inn.thisOver.length === 0 && <span className="help">This over</span>}
             {inn.thisOver.map((b, i) => (
-              <span key={i} className={`ball-chip${/W/.test(b) && !/Wd$/.test(b) ? ' is-w' : b === '4' || b === '6' ? ' is-b' : /Wd|Nb|B|Lb/.test(b) ? ' is-x' : ''}`}>
+              <span key={i} className={chipClass(b)}>
                 {b}
               </span>
             ))}
@@ -463,8 +504,26 @@ export default function Scorer() {
           />
         </Sheet>
       )}
-      {!state.finished && inn.needs[0] === 'bowler' && (
+      {needBowler && (
         <Sheet title={`Over ${Math.floor(inn.legal / 6) + 1}: bowler`} onUndo={at > 1 ? undo : undefined}>
+          <div>
+            <p className="sheet__label">Last over: tap a ball to change it</p>
+            <div className="this-over">
+              {lastOver.map((b) => (
+                <button
+                  key={b.index}
+                  type="button"
+                  className={chipClass(b.label)}
+                  disabled={busy}
+                  aria-label={`Change ball ${b.over}: ${describeBall(b)}`}
+                  onClick={() => setSheet({ kind: 'fix', fix: b })}
+                >
+                  {b.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <p className="sheet__label">Next bowler</p>
           <PickList
             players={inn.bowlingXI}
             roles={roles}
@@ -475,21 +534,34 @@ export default function Scorer() {
         </Sheet>
       )}
 
+      {sheet?.kind === 'fix' && (
+        <FixBallSheet
+          ball={sheet.fix}
+          busy={busy}
+          error={error}
+          onRuns={(n) => ball(n)}
+          onExtra={(extra) => setSheet({ kind: 'extra', extra, fix: sheet.fix })}
+          onWicket={() => setSheet({ kind: 'wicket', extra: null, fix: sheet.fix })}
+          onClose={closeSheet}
+        />
+      )}
       {sheet?.kind === 'extra' && (
         <ExtraSheet
           extra={sheet.extra}
           busy={busy}
+          error={error}
           onRuns={(n) => ball(n, sheet.extra)}
-          onWicket={() => setSheet({ kind: 'wicket', extra: sheet.extra })}
-          onClose={() => setSheet(null)}
+          onWicket={() => setSheet({ kind: 'wicket', extra: sheet.extra, fix: sheet.fix })}
+          onClose={closeSheet}
         />
       )}
       {sheet?.kind === 'wicket' && (
         <WicketSheet
-          inn={inn}
+          inn={wicketInn}
           extra={sheet.extra}
           busy={busy}
-          onClose={() => setSheet(null)}
+          error={error}
+          onClose={closeSheet}
           onConfirm={({ runs, wicket }) => ball(sheet.extra === 'bye' || sheet.extra === 'legbye' ? Math.max(1, runs) : runs, sheet.extra, wicket)}
         />
       )}

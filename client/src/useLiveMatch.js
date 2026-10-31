@@ -2,6 +2,13 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { getMatch } from './api.js';
 import { replay, splitLog } from '../../shared/scoring.js';
 
+// The scoring engine's view of a match.
+export const matchConfig = (match) => ({
+  overs: match.overs,
+  battingFirst: match.battingFirst,
+  sides: match.sides.map((s) => ({ team: s.team, xi: s.playingXI.map((p) => p.name) })),
+});
+
 // Loads a match and keeps it fresh: the server pushes a message after every
 // ball, and we refetch. Returns the match, its replayed ball-by-ball state
 // (null before the toss decision) and setters for the scorer.
@@ -38,14 +45,7 @@ export default function useLiveMatch(id) {
   const state = useMemo(() => {
     if (!match || match.version !== 2 || !match.overs || !match.battingFirst) return null;
     try {
-      return replay(
-        {
-          overs: match.overs,
-          battingFirst: match.battingFirst,
-          sides: match.sides.map((s) => ({ team: s.team, xi: s.playingXI.map((p) => p.name) })),
-        },
-        splitLog(match.log)
-      );
+      return replay(matchConfig(match), splitLog(match.log));
     } catch {
       return null;
     }

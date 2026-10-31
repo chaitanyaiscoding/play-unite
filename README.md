@@ -68,17 +68,20 @@ embedded MongoDB starts automatically with data persisted in `server/.data/`.
     The app rotates strike on odd runs and at the end of each over, asks for the
     new batter after a wicket and the next bowler after each over (no bowler bowls
     two in a row), and ends the innings when overs run out, the side is all out or
-    the target is reached. Undo removes the last ball; retire hurt, change strike,
-    end innings and "no result" are in the ••• menu.
+    the target is reached. Undo removes the last ball, and the bowler prompt shows
+    the over just bowled so any ball in it can be changed; retire hurt, change
+    strike, end innings and "no result" are in the ••• menu.
   - Each innings is stored as an event log; `shared/scoring.js` replays it to get
     the score, batters, bowlers, extras, maidens, partnerships, fall of wickets and
     commentary. The server validates every event with the same engine.
   - **Live**: followers on the match centre get a push after every ball (Server-
     Sent Events), with the live score, run rates, chase equation, batters, bowler,
     this over and commentary.
-  - **Finish match** records the scorecard, result ("India won by 6 wkts" / "by
-    102 runs", tie, no result) and the MVP across both XIs; stars update and both
-    teams are free again. The creator can also abandon a match (no stats).
+  - **When the second innings ends** the match completes by itself: it records the
+    scorecard, result ("India won by 6 wkts" / "by 102 runs", tie) and the MVP
+    across both XIs; stars update and both teams are free again. For 24 hours the
+    creator can undo the final ball, which reopens the match and reverses its
+    stats. The creator can also abandon a match (no stats).
   - The match centre shows a Cricbuzz-style scorecard (batting, extras, total,
     did not bat, bowling with economy) and every player's MVP points.
 - **Following matches** — every signed-in player can follow any match:
@@ -89,7 +92,7 @@ embedded MongoDB starts automatically with data persisted in `server/.data/`.
     bowling cards for each innings while the match is on, and the final scorecard,
     result and MVP afterwards.
   - Only the match creator can score: the scorer screen and the scoring API
-    (`events`, `undo`, `complete`) refuse everyone else.
+    (`events`, `correct`, `undo`, `complete`, `reopen`) refuse everyone else.
 - **Stars** — each MVP raises the player's level: 1 MVP = ★, 5 = ★★, 10 = ★★★,
   20 = ★★★★, 40 = ★★★★★ (`STAR_LEVELS` in `shared/cricket.js`).
 
@@ -142,8 +145,10 @@ cookie (401 without one).
 | POST   | `/api/matches/:id/toss`     | Creator calls `{ call: heads \| tails }`; server flips             |
 | POST   | `/api/matches/:id/decision` | Toss winner `{ decision: bat \| bowl, overs }` → status `live`     |
 | POST   | `/api/matches/:id/events`   | Scorer adds `{ event, at }` (ball, openers, batter, bowler, swap, retire, endInnings); `at` = events already seen, 409 if stale |
+| POST   | `/api/matches/:id/correct`  | Scorer re-records a ball of the current innings `{ index, event, at }`; 400 if it clashes with later events |
 | POST   | `/api/matches/:id/undo`     | Scorer removes the last event `{ at }`                             |
-| POST   | `/api/matches/:id/complete` | `{ at, noResult? }` once the match is over → scorecard, result, MVP |
+| POST   | `/api/matches/:id/complete` | `{ at, noResult? }` ends a match as a no result, or records the result if it didn't close by itself |
+| POST   | `/api/matches/:id/reopen`   | Creator undoes the final ball of a completed match within 24 hours; 409 if a team or player is busy |
 | GET    | `/api/matches/:id/live`     | Server-Sent Events: a message after every change                   |
 | POST   | `/api/matches/:id/abandon`  | Creator cancels a toss/live match (no stats)                       |
 | POST   | `/api/teams/:name/requests`     | Ask to join → 201, 409 already requested            |

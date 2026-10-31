@@ -60,7 +60,9 @@ export const chooseToss = (id, decision, overs) => post(`/matches/${id}/decision
 // Ball-by-ball scoring: `at` is how many events this device has seen.
 export const addMatchEvent = (id, event, at) => post(`/matches/${id}/events`, { event, at });
 export const undoMatchEvent = (id, at) => post(`/matches/${id}/undo`, { at });
+export const correctMatchBall = (id, index, event, at) => post(`/matches/${id}/correct`, { index, event, at });
 export const finishMatch = (id, at, noResult = false) => post(`/matches/${id}/complete`, { at, noResult });
+export const reopenMatch = (id) => post(`/matches/${id}/reopen`);
 export const abandonMatch = (id) => post(`/matches/${id}/abandon`);
 
 export const acceptRequest = (id) => post(`/requests/${id}/accept`);

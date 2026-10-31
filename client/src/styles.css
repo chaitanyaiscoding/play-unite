@@ -1052,6 +1052,8 @@ a.list__row:hover strong { color: var(--accent); }
   font: 700 12px ui-monospace, SFMono-Regular, Menlo, monospace;
   color: var(--text); background: var(--surface-2); border: 1px solid var(--border);
 }
+button.ball-chip { min-width: 40px; height: 40px; font-size: 13px; cursor: pointer; touch-action: manipulation; }
+.fix-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 .ball-chip.is-b { color: #000; background: var(--accent); border-color: var(--accent); }
 .ball-chip.is-w { color: #fff; background: var(--leather); border-color: var(--leather); }
 .ball-chip.is-x { color: #fbbf24; border-color: rgba(251, 191, 36, 0.5); }

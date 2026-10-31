@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Link, Navigate, useParams } from 'react-router-dom';
+import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
+import { reopenMatch } from '../api.js';
 import useLiveMatch from '../useLiveMatch.js';
 import { describeBall, oversText, rates, summarize } from '../../../shared/scoring.js';
 import { EXTRAS, POINTS, RESULTS, ballsToOvers, dismissalText, extrasTotal } from '../../../shared/cricket.js';
@@ -400,8 +401,24 @@ function SquadsCard({ sides }) {
 
 function TwoTeamMatch({ match, state }) {
   const [tab, setTab] = useState(0);
+  const [reopening, setReopening] = useState(false);
+  const [reopenError, setReopenError] = useState('');
+  const navigate = useNavigate();
   if (match.status === 'toss') return <Navigate to={`/matches/${match.id}/toss`} replace />;
   const title = `${match.sides[0].team} vs ${match.sides[1].team}`;
+
+  const reopen = async () => {
+    if (!window.confirm('Remove the last ball and put this match back to live? The result and MVP are cleared until it finishes again.')) return;
+    setReopening(true);
+    setReopenError('');
+    try {
+      await reopenMatch(match.id);
+      navigate(`/matches/${match.id}/score`, { replace: true });
+    } catch (err) {
+      setReopenError(err.message);
+      setReopening(false);
+    }
+  };
 
   if (match.status !== 'completed') {
     return (
@@ -452,6 +469,12 @@ function TwoTeamMatch({ match, state }) {
             </div>
           ))}
         </div>
+        {match.canReopen && (
+          <button type="button" className="cta__link" disabled={reopening} onClick={reopen}>
+            ↶ Last ball wrong? Undo it and reopen the match
+          </button>
+        )}
+        {reopenError && <p className="help help--error">{reopenError}</p>}
       </div>
 
       <MvpCard mvp={match.mvp} />
