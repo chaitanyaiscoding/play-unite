@@ -65,7 +65,20 @@ export const finishMatch = (id, at, noResult = false) => post(`/matches/${id}/co
 export const reopenMatch = (id) => post(`/matches/${id}/reopen`);
 export const abandonMatch = (id) => post(`/matches/${id}/abandon`);
 
-export const acceptRequest = (id) => post(`/requests/${id}/accept`);
+export const listTournaments = () => request('/tournaments');
+export const createTournament = (name) => post('/tournaments', { name });
+export const getTournament = (id) => request(`/tournaments/${id}`);
+export const eligibleMatches = (id) => request(`/tournaments/${id}/eligible`);
+// `extra` is { entry } for a connected match with its teams known, or { final: true }.
+export const addTournamentMatch = (id, team, opponent, extra = {}) => post(`/tournaments/${id}/matches`, { team, opponent, ...extra });
+export const addExistingMatch = (id, match) => post(`/tournaments/${id}/matches/existing`, { match });
+export const addConnectedMatch = (id, sources) => post(`/tournaments/${id}/connected`, { sources });
+export const reorderTournament = (id, teams) =>
+  request(`/tournaments/${id}/order`, { method: 'PUT', body: JSON.stringify({ teams }) });
+export const removeTournamentEntry = (id, number) => request(`/tournaments/${id}/entries/${number}`, { method: 'DELETE' });
+export const completeTournament = (id) => post(`/tournaments/${id}/complete`);
+
+export const acceptRequest =(id) => post(`/requests/${id}/accept`);
 export const rejectRequest = (id) => post(`/requests/${id}/reject`);
 
 export const getNotifications = () => request('/notifications');

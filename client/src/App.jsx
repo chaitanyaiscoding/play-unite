@@ -14,6 +14,10 @@ import StaleApiBanner from './components/StaleApiBanner.jsx';
 import MatchResult from './pages/MatchResult.jsx';
 import Profile from './pages/Profile.jsx';
 import Matches from './pages/Matches.jsx';
+import Tournaments from './pages/Tournaments.jsx';
+import NewTournament from './pages/NewTournament.jsx';
+import Tournament from './pages/Tournament.jsx';
+import TournamentAddMatch from './pages/TournamentAddMatch.jsx';
 
 export default function App() {
   const { player, ready } = usePlayer();
@@ -36,7 +40,11 @@ export default function App() {
             <Route path="/matches/:id" element={player ? <MatchResult /> : <Navigate to="/" replace />} />
             <Route path="/matches/:id/toss" element={player ? <Toss /> : <Navigate to="/" replace />} />
             <Route path="/matches/:id/score" element={player ? <Scorer /> : <Navigate to="/" replace />} />
-            <Route path="/players/:name" element={player ? <Profile /> : <Navigate to="/" replace />} />
+            <Route path="/tournaments" element={player ? <Tournaments /> : <Navigate to="/" replace />} />
+            <Route path="/tournaments/new" element={player ? <NewTournament /> : <Navigate to="/" replace />} />
+            <Route path="/tournaments/:id" element={player ? <Tournament /> : <Navigate to="/" replace />} />
+            <Route path="/tournaments/:id/add" element={player ? <TournamentAddMatch /> : <Navigate to="/" replace />} />
+            <Route path="/players/:name"element={player ? <Profile /> : <Navigate to="/" replace />} />
             <Route
               path="/notifications"
               element={player ? <Notifications /> : <Navigate to="/" replace />}

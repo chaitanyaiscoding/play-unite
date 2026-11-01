@@ -2,20 +2,20 @@ import crypto from 'node:crypto';
 import { Router } from 'express';
 import mongoose from 'mongoose';
 import { Player, nameKey } from '../models/Player.js';
-import { Team, teamKey, isMember } from '../models/Team.js';
+import { Team, isMember } from '../models/Team.js';
 import { Match, isLegacy, sideOf, otherSide } from '../models/Match.js';
+import { Tournament, reopenBlocked } from '../models/Tournament.js';
 import { requirePlayer } from '../middleware/currentPlayer.js';
 import { finalizeMatch, replayMatch } from '../lib/scorecard.js';
+import { ACTIVE, FREE, createTwoTeamMatch } from '../lib/matchSetup.js';
+import { matchCard } from '../lib/matchCard.js';
 import { watch, publish } from '../lib/live.js';
-import { COIN_SIDES, TOSS_DECISIONS, XI_MIN, XI_MAX, dismissalText, levelFor } from '../../../shared/cricket.js';
-import { ScoringError, OVERS_MIN, OVERS_MAX, correctBall, rates } from '../../../shared/scoring.js';
+import { COIN_SIDES, TOSS_DECISIONS, dismissalText, levelFor } from '../../../shared/cricket.js';
+import { ScoringError, OVERS_MIN, OVERS_MAX, correctBall } from '../../../shared/scoring.js';
 
 const router = Router();
 router.use(requirePlayer);
 
-const ACTIVE = ['toss', 'live'];
-const FREE = { inMatch: false, matchStartedAt: null, currentMatch: null };
-const membersOf = (team) => [team.captain, ...team.players];
 const REOPEN_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 // A finished match can go back to live for a day, to fix its last ball.
@@ -25,6 +25,8 @@ const canReopen = (match) =>
   (match.log?.length ?? 0) > 0 &&
   Boolean(match.endedAt) &&
   Date.now() - match.endedAt.getTime() < REOPEN_WINDOW_MS;
+
+const tournamentOf = (match) => (match.tournament ? Tournament.findById(match.tournament) : null);
 
 async function loadMatch(req, res) {
   if (!mongoose.isValidObjectId(req.params.id)) {
@@ -100,6 +102,7 @@ async function view(match, me) {
   const perfByKey = new Map(match.performances.map((p) => [p.player, p]));
   const teams = await Team.find({ _id: { $in: match.sides.map((s) => s.team) } }, { captain: 1, players: 1 });
   const isParticipant = teams.some((t) => isMember(t, me));
+  const tournament = await tournamentOf(match);
 
   return {
     id: match._id,
@@ -107,8 +110,9 @@ async function view(match, me) {
     status: match.status,
     createdBy: name(match.createdBy),
     canControl: match.createdBy === me,
-    canReopen: match.createdBy === me && canReopen(match),
+    canReopen: match.createdBy === me && canReopen(match) && !reopenBlocked(match, tournament),
     isParticipant,
+    tournament: tournament ? { id: tournament._id, name: tournament.name } : null,
     sides: match.sides.map((s) => ({
       team: s.name,
       captain: name(teams.find((t) => t._id === s.team)?.captain),
@@ -202,84 +206,13 @@ async function legacyView(match) {
   };
 }
 
-// Checks one side's XI: 2–11 distinct members of the team.
-function readXI(team, names) {
-  if (!Array.isArray(names)) return { error: `Pick ${team.name}'s playing XI.` };
-  const keys = names.map(nameKey);
-  if (new Set(keys).size !== keys.length) return { error: `${team.name}: a player is listed twice.` };
-  if (keys.length < XI_MIN || keys.length > XI_MAX) {
-    return { error: `${team.name} needs ${XI_MIN}–${XI_MAX} players in the playing XI (${keys.length} picked).` };
-  }
-  const outsider = names.find((n) => !isMember(team, nameKey(n)));
-  if (outsider) return { error: `${outsider} is not in ${team.name}.` };
-  return { keys };
-}
-
 // POST /api/matches { team: { name, playingXI }, opponent: { name, playingXI } }
 // Any member of `team` can create a match against another team.
 router.post('/', async (req, res, next) => {
   try {
     const me = req.player._id;
-    const [mine, theirs] = await Promise.all([
-      Team.findById(teamKey(req.body?.team?.name ?? '')),
-      Team.findById(teamKey(req.body?.opponent?.name ?? '')),
-    ]);
-    if (!mine) return res.status(404).json({ error: 'Pick your team.' });
-    if (!theirs) return res.status(404).json({ error: 'Pick an opponent team.' });
-    if (mine._id === theirs._id) return res.status(400).json({ error: 'A team can’t play against itself.' });
-    if (!isMember(mine, me)) return res.status(403).json({ error: `You can only create a match for a team you’re in.` });
-    for (const t of [mine, theirs]) {
-      if (t.inMatch) return res.status(409).json({ error: `${t.name} is already playing a match.` });
-    }
-
-    const xiA = readXI(mine, req.body.team.playingXI);
-    if (xiA.error) return res.status(400).json({ error: xiA.error });
-    const xiB = readXI(theirs, req.body.opponent.playingXI);
-    if (xiB.error) return res.status(400).json({ error: xiB.error });
-
-    // A player can only turn out for one side.
-    const clash = xiA.keys.find((k) => xiB.keys.includes(k));
-    if (clash) {
-      const p = await Player.findById(clash, { name: 1 });
-      return res.status(400).json({ error: `${p?.name ?? clash} can only play for one team in a match.` });
-    }
-    // …and only in one match at a time.
-    const all = [...xiA.keys, ...xiB.keys];
-    const busy = await Match.findOne({ status: { $in: ACTIVE }, 'sides.playingXI': { $in: all } });
-    if (busy) {
-      const k = busy.sides.flatMap((s) => s.playingXI).find((x) => all.includes(x));
-      const p = await Player.findById(k, { name: 1 });
-      return res.status(409).json({
-        error: `${p?.name ?? k} is already playing in ${busy.sides[0].name} vs ${busy.sides[1].name}.`,
-      });
-    }
-
-    const playing = new Set(all);
-    const bench = (team) => membersOf(team).filter((k) => !playing.has(k));
-    const match = await Match.create({
-      createdBy: me,
-      status: 'toss',
-      sides: [
-        { team: mine._id, name: mine.name, playingXI: xiA.keys, bench: bench(mine) },
-        { team: theirs._id, name: theirs.name, playingXI: xiB.keys, bench: bench(theirs) },
-      ],
-    });
-
-    // Lock both teams; if either is taken meanwhile, undo and report it.
-    const lock = (team) =>
-      Team.updateOne(
-        { _id: team._id, inMatch: false },
-        { inMatch: true, matchStartedAt: match.startedAt, currentMatch: match._id }
-      );
-    const a = await lock(mine);
-    const b = a.modifiedCount ? await lock(theirs) : { modifiedCount: 0 };
-    if (!a.modifiedCount || !b.modifiedCount) {
-      await Team.updateMany({ currentMatch: match._id }, FREE);
-      await Match.deleteOne({ _id: match._id });
-      const taken = a.modifiedCount ? theirs : mine;
-      return res.status(409).json({ error: `${taken.name} is already playing a match.` });
-    }
-
+    const { match, status, error } = await createTwoTeamMatch({ me, team: req.body?.team, opponent: req.body?.opponent });
+    if (error) return res.status(status).json({ error });
     res.status(201).json(await view(match, me));
   } catch (err) {
     next(err);
@@ -287,53 +220,6 @@ router.post('/', async (req, res, next) => {
 });
 
 const LIST_LIMIT = 50;
-
-// A small "scores so far" card for match lists: each side's score, and a
-// status line (toss, chase equation, or the result).
-function matchCard(m, name) {
-  const sideName = (teamKey) => sideOf(m, teamKey)?.name ?? null;
-  const scores = new Map(); // team name -> { runs, wickets, balls }
-  let line = null;
-  let batting = null;
-
-  if (m.status === 'completed') {
-    for (const inn of m.innings ?? []) scores.set(sideName(inn.batting), inn.total);
-    line = m.outcome?.text ?? null;
-  } else if (m.status === 'toss') {
-    line = m.toss?.outcome ? `${sideName(m.toss.winner)} won the toss` : 'Toss coming up';
-  } else {
-    try {
-      const state = replayMatch(m);
-      for (const inn of state.innings) {
-        if (!inn.needs.includes('openers') || inn.legal) scores.set(sideName(inn.batting), { runs: inn.runs, wickets: inn.wickets, balls: inn.legal });
-      }
-      const idx = state.current ?? state.innings.length - 1;
-      const inn = state.innings[idx];
-      batting = state.finished ? null : sideName(inn.batting);
-      if (state.finished) line = 'Match over: result coming up';
-      else if (idx === 1 && !inn.needs.includes('openers')) {
-        const r = rates(state, idx);
-        line = `${sideName(inn.batting)} need ${r.need} run${r.need === 1 ? '' : 's'} off ${r.ballsLeft} ball${r.ballsLeft === 1 ? '' : 's'}`;
-      } else if (idx === 1) line = `Innings break: ${sideName(inn.batting)} need ${state.target} to win`;
-      else line = `${sideName(m.toss.winner)} won the toss and opted to ${m.toss.decision}`;
-    } catch {
-      line = 'Live';
-    }
-  }
-
-  return {
-    id: m._id,
-    status: m.status,
-    overs: m.overs,
-    createdBy: name(m.createdBy),
-    batting,
-    teams: m.sides.map((s) => ({ name: s.name, score: scores.get(s.name) ?? null })),
-    line,
-    winner: m.status === 'completed' ? sideName(m.outcome?.winner) : null,
-    startedAt: m.startedAt,
-    endedAt: m.endedAt,
-  };
-}
 
 // GET /api/matches?status=live|completed&limit= — matches anyone can follow:
 // in progress (toss or live) and completed, newest first.
@@ -597,7 +483,9 @@ router.post('/:id/reopen', async (req, res, next) => {
   try {
     const match = await loadForCreator(req, res, 'reopen this match');
     if (!match) return;
-    if (!canReopen(match)) return res.status(409).json({ error: 'This match can no longer be reopened.' });
+    if (!canReopen(match) || reopenBlocked(match, await tournamentOf(match))) {
+      return res.status(409).json({ error: 'This match can no longer be reopened.' });
+    }
 
     const everyone = match.sides.flatMap((s) => s.playingXI);
     const busy = await Match.findOne({ _id: { $ne: match._id }, status: { $in: ACTIVE }, 'sides.playingXI': { $in: everyone } });

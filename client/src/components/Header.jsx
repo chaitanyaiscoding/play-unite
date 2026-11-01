@@ -1,10 +1,16 @@
-import { Link } from 'react-router-dom';
+import { Link, NavLink } from 'react-router-dom';
 import { usePlayer } from '../PlayerContext.jsx';
 import { useNotifications } from '../NotificationsContext.jsx';
 import CricketBall from './CricketBall.jsx';
 
-const NAV = ['Live Scores', 'Schedule', 'Matches', 'Teams', 'Players', 'Stats'];
-const NAV_LINKS = { 'Live Scores': '/matches', Matches: '/matches' };
+const NAV = ['Live Scores', 'Schedule', 'Matches', 'Tournaments', 'Teams', 'Players', 'Stats'];
+const NAV_LINKS = { 'Live Scores': '/matches', Matches: '/matches', Tournaments: '/tournaments' };
+// Phones don't have room for the full nav: just the pages that exist.
+const PHONE_NAV = [
+  ['Home', '/home'],
+  ['Matches', '/matches'],
+  ['Tournaments', '/tournaments'],
+];
 
 export default function Header() {
   const { player, signOut } = usePlayer();
@@ -63,6 +69,15 @@ export default function Header() {
           </div>
         )}
       </div>
+      {player && (
+        <nav className="phone-nav" aria-label="Main">
+          {PHONE_NAV.map(([label, to]) => (
+            <NavLink key={to} to={to} className={({ isActive }) => `phone-nav__item${isActive ? ' is-active' : ''}`}>
+              {label}
+            </NavLink>
+          ))}
+        </nav>
+      )}
     </header>
   );
 }

@@ -83,6 +83,7 @@ const matchSchema = new mongoose.Schema(
     performances: [performanceSchema],
     mvp: { type: String, ref: 'Player', default: null },
     mvpPoints: { type: Number, default: null },
+    tournament: { type: mongoose.Schema.Types.ObjectId, ref: 'Tournament', default: null }, // at most one
 
     // Legacy single-team matches
     team: { type: String, ref: 'Team' },
@@ -98,6 +99,7 @@ matchSchema.index({ 'sides.team': 1, endedAt: -1 });
 matchSchema.index({ status: 1, 'sides.playingXI': 1 });
 matchSchema.index({ team: 1, endedAt: -1 });
 matchSchema.index({ 'performances.player': 1, endedAt: -1 });
+matchSchema.index({ tournament: 1 });
 
 export const isLegacy = (m) => !m.sides?.length;
 const id = (v) => (v && typeof v === 'object' ? v._id : v);

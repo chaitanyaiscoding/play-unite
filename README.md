@@ -93,6 +93,27 @@ embedded MongoDB starts automatically with data persisted in `server/.data/`.
     result and MVP afterwards.
   - Only the match creator can score: the scorer screen and the scoring API
     (`events`, `correct`, `undo`, `complete`, `reopen`) refuse everyone else.
+- **Tournaments** (`/tournaments`; rules in `shared/tournament.js`):
+  - Anyone can create a tournament and becomes its **organiser**. Only the organiser
+    can change it; everyone can follow it. Running tournaments are listed first,
+    then completed ones with the champion and awards.
+  - The organiser adds matches in three ways: a **new** match between any two created
+    teams (they don't have to be in them, and they score it), an **existing** running
+    or completed match (it keeps its own scorer; a match can only be in one
+    tournament), or a **connected** match that takes the winner or loser of two
+    earlier matches. Its teams fill in once those finish, then the organiser sets the
+    lineups. If an earlier match has no winner, the connected match is a no result.
+  - The **map** shows connected matches in rows with winner and loser lines, and
+    unconnected matches below. The **table** ranks teams by wins; the organiser can
+    change the order of teams level on wins, never overrule wins. Abandoned matches,
+    the final and connected no results don't count in the table.
+  - The **final** is created from the top two, once nothing is in progress or waiting.
+  - **Awards**: best batsman (most runs, then fewest balls), best bowler (most wickets,
+    then fewest runs conceded) and each match's MVP, including the final.
+  - **Ending** a tournament records the champion: the final's winner, or the top of the
+    table if there's no decided final. After that nothing changes, and its matches can't
+    be reopened. A match also can't be reopened once it fed a connected match that has
+    started, or once the final exists.
 - **Stars** — each MVP raises the player's level: 1 MVP = ★, 5 = ★★, 10 = ★★★,
   20 = ★★★★, 40 = ★★★★★ (`STAR_LEVELS` in `shared/cricket.js`).
 

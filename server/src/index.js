@@ -13,6 +13,7 @@ import notificationsRouter from './routes/notifications.js';
 import { Team } from './models/Team.js';
 import { API_VERSION } from '../../shared/version.js';
 import matchesRouter from './routes/matches.js';
+import tournamentsRouter from './routes/tournaments.js';
 
 const PORT = Number(process.env.PORT) || 5000;
 const PRODUCTION = process.env.NODE_ENV === 'production';
@@ -34,6 +35,7 @@ app.use('/api/teams', teamsRouter);
 app.use('/api/requests', requestsRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/matches', matchesRouter);
+app.use('/api/tournaments', tournamentsRouter);
 // Unknown API routes answer in JSON, not Express's HTML page.
 app.use('/api', (req, res) => res.status(404).json({ error: `No API route for ${req.method} ${req.originalUrl}.` }));
 

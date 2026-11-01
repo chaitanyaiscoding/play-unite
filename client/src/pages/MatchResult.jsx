@@ -399,6 +399,15 @@ function SquadsCard({ sides }) {
   );
 }
 
+// A tournament match leads back to its tournament.
+function BackLink({ tournament }) {
+  return tournament ? (
+    <Link to={`/tournaments/${tournament.id}`} className="back">← {tournament.name}</Link>
+  ) : (
+    <Link to="/home" className="back">← Home</Link>
+  );
+}
+
 function TwoTeamMatch({ match, state }) {
   const [tab, setTab] = useState(0);
   const [reopening, setReopening] = useState(false);
@@ -423,7 +432,7 @@ function TwoTeamMatch({ match, state }) {
   if (match.status !== 'completed') {
     return (
       <section className="stack">
-        <Link to="/home" className="back">← Home</Link>
+        <BackLink tournament={match.tournament} />
         <div className={`card section match-head${match.status === 'live' ? ' match--live' : ''}`}>
           <span className={`status status--${match.status === 'live' ? 'in_match' : 'needs_players'}`}>
             <span className="status__dot" aria-hidden="true" />
@@ -452,7 +461,7 @@ function TwoTeamMatch({ match, state }) {
   const winner = match.outcome?.winner;
   return (
     <section className="stack">
-      <Link to="/home" className="back">← Home</Link>
+      <BackLink tournament={match.tournament} />
       <div className="card section match-head">
         <h2>{title}</h2>
         <p className={`match-head__result${winner ? '' : ' is-neutral'}`}>{match.outcome?.text}</p>
